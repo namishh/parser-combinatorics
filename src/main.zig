@@ -1,9 +1,5 @@
 const std = @import("std");
 
-const Pattern = union(enum) {
-    str: []const u8,
-};
-
 const ParserState = struct {
     target_string: []const u8,
     result: std.ArrayList([]const u8),
@@ -16,55 +12,64 @@ const ParserState = struct {
         };
     }
 
-    fn sequence(self: ParserState, patterns: []const Pattern, allocator: std.mem.Allocator) !?ParserState {
-        var state = self;
-        for (patterns) |pattern| {
-            state = switch (pattern) {
-                .str => |s| try state.parse_str(s, allocator),
-            } orelse return null;
-        }
-
-        return state;
-    }
-
-    fn parse_str(self: ParserState, s: []const u8, allocator: std.mem.Allocator) !?ParserState {
-        const remaining = self.target_string[self.index..];
-
-        if (!std.mem.startsWith(u8, remaining, s))
-            return null;
-
-        var state = self;
-        try state.result.append(allocator, s);
-
-        state.index += s.len;
-        return state;
+    fn deinit(self: *ParserState, allocator: std.mem.Allocator) void {
+        self.result.deinit(allocator);
     }
 };
 
-fn str(s: []const u8) Pattern {
-    return .{ .str = s };
+const Parser = union(enum) {
+    string: []const u8,
+    sequence: []const Parser,
+
+    pub fn parse(self: Parser, allocator: std.mem.Allocator, state: *ParserState) anyerror!void {
+        switch (self) {
+            .string => |expected| {
+                const remaining = state.target_string[state.index..];
+
+                if (!std.mem.startsWith(u8, remaining, expected)) {
+                    return error.CouldNotMatch;
+                }
+
+                try state.result.append(allocator, expected);
+                state.index += expected.len;
+            },
+            .sequence => |parsers| {
+                for (parsers) |parser| {
+                    try parser.parse(allocator, state);
+                }
+            },
+        }
+    }
+};
+
+fn str(s: []const u8) Parser {
+    return .{ .string = s };
+}
+
+fn sequence(parsers: []const Parser) Parser {
+    return .{ .sequence = parsers };
 }
 
 pub fn main() !void {
     const allocator = std.heap.page_allocator;
-    const p = ParserState.init("hi there");
 
-    const patterns = [_]Pattern{
-        str("hi"),
-        str(" "),
-        str("there"),
-    };
+    var state = ParserState.init("hello big world");
+    defer state.deinit(allocator);
 
-    const res = try p.sequence(&patterns, allocator);
+    const parser = sequence(&.{
+        str("hello"),
+        sequence(&.{
+            str(" "),
+            str("big"),
+        }),
+        str(" world"),
+    });
 
-    if (res) |r| {
-        std.debug.print("matched: {s}\nindex: {d}\n", .{ r.target_string[0..r.index], r.index });
-        std.debug.print("{d}\n", .{res.?.result.items.len});
+    try parser.parse(allocator, &state);
 
-        for (res.?.result.items) |v| {
-            std.debug.print("{s}\n", .{v});
-        }
-    } else {
-        std.debug.print("failed to match pattern\n", .{});
+    std.debug.print("index: {d}\n", .{state.index});
+
+    for (state.result.items) |result| {
+        std.debug.print("matched: '{s}'\n", .{result});
     }
 }
