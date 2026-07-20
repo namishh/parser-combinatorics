@@ -1,38 +1,70 @@
 const std = @import("std");
 
-const ParserState = struct {
-    target_string: []const u8,
-    result: ?[]const u8,
-    index: usize,
+const Pattern = union(enum) {
+    str: []const u8,
 };
 
-fn new_parser(target_string: []const u8) ParserState {
-    return .{ .target_string = target_string, .index = 0, .result = null };
-}
+const ParserState = struct {
+    target_string: []const u8,
+    result: std.ArrayList([]const u8),
+    index: usize = 0,
 
-fn str(parser: ParserState, s: []const u8) !ParserState {
-    if (std.mem.startsWith(u8, parser.target_string, s)) {
-        return .{ .target_string = parser.target_string, .result = s, .index = parser.index + s.len };
-    }
-    return error.CouldNotMatch;
-}
-
-const ParseFunc = fn (ParserState, []const u8) ParserState;
-
-fn sequence(parser: ParserState, funcs: []ParseFunc) !ParserState {
-    const results = []ParserState;
-
-    var next_state = parser;
-    for (funcs) |f| {
-        next_state = f(parser);
-        results.add(f);
+    fn init(target_string: []const u8) ParserState {
+        return .{
+            .target_string = target_string,
+            .result = .empty,
+        };
     }
 
-    return .{ .index = parser.index, .result = results, .target_string = parser.target_string };
+    fn sequence(self: ParserState, patterns: []const Pattern, allocator: std.mem.Allocator) !?ParserState {
+        var state = self;
+        for (patterns) |pattern| {
+            state = switch (pattern) {
+                .str => |s| try state.parse_str(s, allocator),
+            } orelse return null;
+        }
+
+        return state;
+    }
+
+    fn parse_str(self: ParserState, s: []const u8, allocator: std.mem.Allocator) !?ParserState {
+        const remaining = self.target_string[self.index..];
+
+        if (!std.mem.startsWith(u8, remaining, s))
+            return null;
+
+        var state = self;
+        try state.result.append(allocator, s);
+
+        state.index += s.len;
+        return state;
+    }
+};
+
+fn str(s: []const u8) Pattern {
+    return .{ .str = s };
 }
 
 pub fn main() !void {
-    const p = new_parser("hello this is big text corpus");
-    const res = try str(p, "hello");
-    std.debug.print("target_string = {s}\nresult = {s}\nindex = {d}", .{ res.target_string, res.result.?, res.index });
+    const allocator = std.heap.page_allocator;
+    const p = ParserState.init("hi there");
+
+    const patterns = [_]Pattern{
+        str("hi"),
+        str(" "),
+        str("there"),
+    };
+
+    const res = try p.sequence(&patterns, allocator);
+
+    if (res) |r| {
+        std.debug.print("matched: {s}\nindex: {d}\n", .{ r.target_string[0..r.index], r.index });
+        std.debug.print("{d}\n", .{res.?.result.items.len});
+
+        for (res.?.result.items) |v| {
+            std.debug.print("{s}\n", .{v});
+        }
+    } else {
+        std.debug.print("failed to match pattern\n", .{});
+    }
 }
