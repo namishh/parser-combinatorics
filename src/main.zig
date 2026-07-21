@@ -1,19 +1,26 @@
 const std = @import("std");
 
+const ParserError = struct { index: usize, expected: []const u8 };
+
 const ParserState = struct {
     target_string: []const u8,
     result: std.ArrayList([]const u8),
     index: usize = 0,
+    parse_error: ?ParserError = null,
 
     fn init(target_string: []const u8) ParserState {
-        return .{
-            .target_string = target_string,
-            .result = .empty,
-        };
+        return .{ .target_string = target_string, .result = .empty };
     }
 
     fn deinit(self: *ParserState, allocator: std.mem.Allocator) void {
         self.result.deinit(allocator);
+    }
+
+    fn setError(self: *ParserState, expected: []const u8) void {
+        self.parse_error = .{
+            .index = self.index,
+            .expected = expected,
+        };
     }
 };
 
@@ -27,6 +34,7 @@ const Parser = union(enum) {
                 const remaining = state.target_string[state.index..];
 
                 if (!std.mem.startsWith(u8, remaining, expected)) {
+                    state.setError(expected);
                     return error.CouldNotMatch;
                 }
 
@@ -59,13 +67,20 @@ pub fn main() !void {
     const parser = sequence(&.{
         str("hello"),
         sequence(&.{
-            str(" "),
             str("big"),
         }),
         str(" world"),
     });
 
-    try parser.parse(allocator, &state);
+    parser.parse(allocator, &state) catch |err| {
+        if (err == error.CouldNotMatch) {
+            if (state.parse_error) |parse_error| {
+                std.debug.print("Parse error at index {d}: expected '{s}'\n", .{ parse_error.index, parse_error.expected });
+            }
+            return;
+        }
+        return err;
+    };
 
     std.debug.print("index: {d}\n", .{state.index});
 
