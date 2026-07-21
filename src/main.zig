@@ -29,6 +29,7 @@ const Parser = union(enum) {
     string: []const u8,
     sequence: []const Parser,
     letters: ?usize,
+    choice: []const Parser,
     digits: ?usize,
 
     pub fn parse(self: Parser, allocator: std.mem.Allocator, state: *ParserState) anyerror!void {
@@ -114,6 +115,22 @@ const Parser = union(enum) {
 
                 try state.result.append(allocator, state.target_string[start..state.index]);
             },
+
+            .choice => |parsers| {
+                const orig_index = state.index;
+                const orig_result_len = state.result.items.len;
+
+                for (parsers) |parser| {
+                    state.index = orig_index;
+                    state.result.items.len = orig_result_len;
+                    state.parse_error = null;
+                    if (parser.parse(allocator, state)) |_| {
+                        return;
+                    } else |_| {}
+                }
+
+                return error.CouldNotMatch;
+            },
         }
     }
 };
@@ -132,6 +149,10 @@ fn lettersN(n: usize) Parser {
 
 fn digits() Parser {
     return .{ .digits = null };
+}
+
+fn choice(parsers: []const Parser) Parser {
+    return .{ .choice = parsers };
 }
 
 fn digitsN(n: usize) Parser {
@@ -229,4 +250,21 @@ test "sequence" {
     try parser.parse(testing.allocator, &state);
 
     try testing.expectEqual(@as(usize, 18), state.index);
+}
+
+test "choice test" {
+    var state = ParserState.init("hello nam");
+    defer state.deinit(testing.allocator);
+
+    const parser = sequence(&.{
+        str("hello "),
+        choice(&.{
+            str("world"),
+            str("zig"),
+            lettersN(3),
+        }),
+    });
+
+    try parser.parse(testing.allocator, &state);
+    try testing.expectEqualStrings("nam", state.result.items[1]);
 }
