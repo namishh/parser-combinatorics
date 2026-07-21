@@ -27,6 +27,8 @@ const ParserState = struct {
 const Parser = union(enum) {
     string: []const u8,
     sequence: []const Parser,
+    letters: ?usize,
+    // digits: ?usize,
 
     pub fn parse(self: Parser, allocator: std.mem.Allocator, state: *ParserState) anyerror!void {
         switch (self) {
@@ -46,12 +48,49 @@ const Parser = union(enum) {
                     try parser.parse(allocator, state);
                 }
             },
+            // generic parsers
+            .letters => |size| {
+                const start = state.index;
+
+                if (size) |n| {
+                    if (start + n >= state.target_string.len) {
+                        state.setError("n is overflowing");
+                        return error.LengthTooBig;
+                    }
+
+                    const end = start + n;
+
+                    for (state.target_string[start..end]) |char| {
+                        if (!std.ascii.isAlphabetic(char)) {
+                            state.setError("letters");
+                            return error.CouldNotMatch;
+                        }
+                    }
+
+                    state.index = end;
+                } else {
+                    while (state.index < state.target_string.len and std.ascii.isAlphabetic(state.target_string[state.index])) {
+                        state.index += 1;
+                    }
+
+                    if (state.index == start) {
+                        state.setError("letters");
+                        return error.CouldNotMatch;
+                    }
+                }
+
+                try state.result.append(allocator, state.target_string[start..state.index]);
+            },
         }
     }
 };
 
 fn str(s: []const u8) Parser {
     return .{ .string = s };
+}
+
+fn letters() Parser {
+    return .{ .letters = null };
 }
 
 fn sequence(parsers: []const Parser) Parser {
@@ -67,9 +106,11 @@ pub fn main() !void {
     const parser = sequence(&.{
         str("hello"),
         sequence(&.{
-            str("big"),
+            str(" "),
+            letters(),
+            str(" "),
         }),
-        str(" world"),
+        str("world"),
     });
 
     parser.parse(allocator, &state) catch |err| {
