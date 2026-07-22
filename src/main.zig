@@ -29,6 +29,36 @@ fn MappedParser(comptime mapper: anytype) type {
     };
 }
 
+fn ChainedParser(comptime chainer: anytype) type {
+    return struct {
+        parser: Parser,
+
+        const Self = @This();
+
+        pub fn parse(self: Self, allocator: std.mem.Allocator, state: *ParserState) anyerror!void {
+            const result_start = state.result.items.len;
+            //
+            // workfloow
+            // run the first parser -> use the results only by THAT PARSER -> pass them into chain callback -> use those results in the chainer
+            // -> continue parsing
+            //
+            try self.parser.parse(allocator, state);
+            const results = state.result.items[result_start..];
+            const next_parser = chainer(results);
+            try next_parser.parse(allocator, state);
+        }
+
+        pub fn run(self: Self, allocator: std.mem.Allocator, input: []const u8) !ParserState {
+            var state = ParserState.init(input);
+            // clean this up ONLY if you fail.
+            errdefer state.deinit(allocator);
+
+            try self.parse(allocator, &state);
+            return state;
+        }
+    };
+}
+
 const ParserState = struct {
     target_string: []const u8,
     result: std.ArrayList([]const u8),
@@ -195,6 +225,10 @@ const Parser = union(enum) {
     }
 
     pub fn map(self: Parser, comptime mapper: anytype) MappedParser(mapper) {
+        return .{ .parser = self };
+    }
+
+    pub fn chain(self: Parser, comptime chainer: anytype) ChainedParser(chainer) {
         return .{ .parser = self };
     }
 };
@@ -387,4 +421,22 @@ test "extract into select statement" {
     );
 
     try std.testing.expectEqualStrings("name", result.column);
+}
+
+fn parse_based_on_value(results: []const []const u8) Parser {
+    const kind = results[0];
+    if (std.mem.eql(u8, kind, "word")) {
+        return sequence(&.{ str(":"), letters() });
+    }
+    return sequence(&.{ str(":"), digits() });
+}
+
+test "chainer" {
+    const parser = choice(&.{ str("word"), str("number") }).chain(parse_based_on_value);
+
+    var state = try parser.run(testing.allocator, "word:hello");
+    defer state.deinit(testing.allocator);
+
+    try std.testing.expectEqualStrings("word", state.result.items[0]);
+    try std.testing.expectEqualStrings("hello", state.result.items[2]);
 }
