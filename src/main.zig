@@ -3,6 +3,32 @@ const testing = std.testing;
 
 const ParserError = struct { index: usize, expected: []const u8 };
 
+fn MappedParser(comptime mapper: anytype) type {
+    const fn_info = @typeInfo(@TypeOf(mapper)).@"fn";
+    const ReturnType = fn_info.return_type.?;
+
+    return struct {
+        parser: Parser,
+        const Self = @This();
+
+        pub fn parse(self: Self, allocator: std.mem.Allocator, state: *ParserState) !ReturnType {
+            const result_start = state.result.items.len;
+
+            try self.parser.parse(allocator, state);
+            const results = state.result.items[result_start..];
+
+            return mapper(results);
+        }
+
+        pub fn run(self: Self, allocator: std.mem.Allocator, input: []const u8) !ReturnType {
+            var state = ParserState.init(input);
+            defer state.deinit(allocator);
+
+            return try self.parse(allocator, &state);
+        }
+    };
+}
+
 const ParserState = struct {
     target_string: []const u8,
     result: std.ArrayList([]const u8),
@@ -167,6 +193,10 @@ const Parser = union(enum) {
             },
         }
     }
+
+    pub fn map(self: Parser, comptime mapper: anytype) MappedParser(mapper) {
+        return .{ .parser = self };
+    }
 };
 
 fn str(s: []const u8) Parser {
@@ -201,7 +231,7 @@ fn sequence(parsers: []const Parser) Parser {
 }
 
 pub fn main() !void {
-    std.debug.print("run `zig test src/main.zig`", .{});
+    std.debug.print("run `zig test src/main.zig`\n", .{});
 }
 
 test "basic str" {
@@ -318,4 +348,43 @@ test "many test" {
     });
 
     try parser.parse(testing.allocator, &state);
+}
+
+fn extract_html_tag(results: []const []const u8) []const u8 {
+    return results[1];
+}
+
+test "extract html tags" {
+    const parser = sequence(&.{ str("<"), letters(), str(">") }).map(extract_html_tag);
+
+    const result = try parser.run(
+        std.testing.allocator,
+        "<html>",
+    );
+
+    try std.testing.expectEqualStrings("html", result);
+}
+
+const SelectStatement = struct {
+    column: []const u8,
+    table: []const u8,
+};
+
+fn extract_into_select(results: []const []const u8) SelectStatement {
+    return .{
+        .column = results[1],
+        .table = results[3],
+    };
+}
+
+test "extract into select statement" {
+    const parser = sequence(&.{ str("SELECT "), letters(), str(" FROM "), letters(), str(";") })
+        .map(extract_into_select);
+
+    const result: SelectStatement = try parser.run(
+        std.testing.allocator,
+        "SELECT name FROM users;",
+    );
+
+    try std.testing.expectEqualStrings("name", result.column);
 }
