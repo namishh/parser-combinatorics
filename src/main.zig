@@ -30,6 +30,7 @@ const Parser = union(enum) {
     sequence: []const Parser,
     letters: ?usize,
     choice: []const Parser,
+    many: []const Parser,
     digits: ?usize,
 
     pub fn parse(self: Parser, allocator: std.mem.Allocator, state: *ParserState) anyerror!void {
@@ -131,6 +132,39 @@ const Parser = union(enum) {
 
                 return error.CouldNotMatch;
             },
+
+            .many => |parsers| {
+                while (true) {
+                    const original_index = state.index;
+                    const original_result_len = state.result.items.len;
+                    const original_error = state.parse_error;
+
+                    var match = true;
+
+                    for (parsers) |parser| {
+                        parser.parse(allocator, state) catch |err| {
+                            if (err == error.CouldNotMatch or err == error.LengthTooBig) {
+                                match = false;
+                                break;
+                            }
+
+                            return err;
+                        };
+                    }
+
+                    if (!match) {
+                        state.index = original_index;
+                        state.result.items.len = original_result_len;
+                        state.parse_error = original_error;
+
+                        break;
+                    }
+
+                    if (state.index == original_index) {
+                        return error.ParserDidNotConsumeInput;
+                    }
+                }
+            },
         }
     }
 };
@@ -155,6 +189,9 @@ fn choice(parsers: []const Parser) Parser {
     return .{ .choice = parsers };
 }
 
+fn many(parsers: []const Parser) Parser {
+    return .{ .many = parsers };
+}
 fn digitsN(n: usize) Parser {
     return .{ .digits = n };
 }
@@ -267,4 +304,18 @@ test "choice test" {
 
     try parser.parse(testing.allocator, &state);
     try testing.expectEqualStrings("nam", state.result.items[1]);
+}
+
+test "many test" {
+    var state = ParserState.init("hahahaha!");
+    defer state.deinit(testing.allocator);
+
+    const parser = sequence(&.{
+        many(&.{
+            str("ha"),
+        }),
+        str("!"),
+    });
+
+    try parser.parse(testing.allocator, &state);
 }
